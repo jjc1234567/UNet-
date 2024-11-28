@@ -253,7 +253,7 @@ for epoch in range(num_epochs):
         test_loss_logger.append(test_loss)
 
     # 每50个epoch调用optimize_images进行预测
-    if (epoch + 1) % 5 == 0:
+    if (epoch + 1) % 50 == 0:
         # 保存模型的状态
         torch.save(model.state_dict(), f'larger_unet_lsp_epoch_{epoch + 1}.pth')
 
