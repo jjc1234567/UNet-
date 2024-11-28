@@ -21,12 +21,13 @@ import pandas as pd
 # 新增的导入
 from pytorch_msssim import ssim
 
+inferencer = MMPoseInferencer('human', device='cuda:0')
+
 # 使用模型配置文件和权重文件的路径或 URL 构建推理器
 inferencer = MMPoseInferencer(
     pose2d='mmpose/configs/body_2d_keypoint/topdown_heatmap/coco/td-hm_hrnet-w32_8xb64-210e_coco-256x192.py',
     pose2d_weights='https://download.openmmlab.com/mmpose/top_down/hrnet/hrnet_w32_coco_256x192-c78dce93_20200708.pth'
 )
-
 
 # 数据集类
 class MyDataset(Dataset):
@@ -51,7 +52,6 @@ class MyDataset(Dataset):
             transformed_optimized = self.transform(optimized_image)
 
         return {'original': transformed_original, 'optimized': transformed_optimized}
-
 
 # 修改损失函数
 def custom_loss(original_images, outputs):
@@ -90,10 +90,6 @@ def oks_keypoints(original_images, outputs):
         pose_results_ori = next(inferencer(ori_array))
         pose_results_em = next(inferencer(em_array))
 
-        # 打印返回的结果，以检查其结构
-        # print(f"Pose Results Original: {pose_results_ori}")
-        # print(f"Pose Results EM: {pose_results_em}")
-
         # 确保从结果中提取关键点
         if ('predictions' in pose_results_ori and
             len(pose_results_ori['predictions']) > 0 and
@@ -123,9 +119,6 @@ def oks_keypoints(original_images, outputs):
         if keypoints_truth.shape[1] != 3 or keypoints_pred.shape[1] != 3:
             print("Warning: keypoints array does not contain (x, y, score).")
             continue
-
-        # print(f"Keypoints Truth Shape: {keypoints_truth.shape}")  # 调试信息
-        # print(f"Keypoints Pred Shape: {keypoints_pred.shape}")    # 调试信息
 
         # 计算 OKS
         num_keypoints = keypoints_truth.shape[0]
@@ -163,7 +156,6 @@ def oks_keypoints(original_images, outputs):
 
     print(f"OKS Ave: {oks_final}")
     return oks_final
-
 
 # 超参数
 batch_size = 32
@@ -214,51 +206,55 @@ model = model.to(device)
 train_loss_logger = []  # 保存训练损失
 test_loss_logger = []
 
-for epoch in range(num_epochs):
-    model.train()
-    for batch in train_loader:
-        original_images = batch['original'].to(device)
-        optimized_images = batch['optimized'].to(device)
+# 打开日志文件
+with open('training_log.txt', 'w') as log_file:
+    for epoch in range(num_epochs):
+        model.train()
+        for batch in train_loader:
+            original_images = batch['original'].to(device)
+            optimized_images = batch['optimized'].to(device)
 
-        optimizer.zero_grad()
-        outputs = model(optimized_images)
-        outputs = torch.nn.functional.interpolate(outputs, size=(original_images.size(2), original_images.size(3)), mode='bilinear', align_corners=False)
-       
-        loss = custom_loss(original_images, outputs)
-        loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            outputs = model(optimized_images)
+            outputs = torch.nn.functional.interpolate(outputs, size=(original_images.size(2), original_images.size(3)), mode='bilinear', align_corners=False)
+           
+            loss = custom_loss(original_images, outputs)
+            loss.backward()
+            optimizer.step()
 
-        train_loss_logger.append(loss.item())  # 记录训练损失
+            train_loss_logger.append(loss.item())  # 记录训练损失
 
-    scheduler.step()  
-    print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
+        scheduler.step()  
+        log_file.write(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}\n')  # 记录到日志文件
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Loss: {loss.item()}')
 
-    # 在训练循环中每隔5次迭代计算测试集损失
-    if (epoch + 1) % 5 == 0:
-        model.eval()
-        test_loss = 0.0
-        with torch.no_grad():
-            for batch in test_loader:
-                original_images = batch['original'].to(device)
-                optimized_images = batch['optimized'].to(device)
+        # 在训练循环中每隔5次迭代计算测试集损失
+        if (epoch + 1) % 5 == 0:
+            model.eval()
+            test_loss = 0.0
+            with torch.no_grad():
+                for batch in test_loader:
+                    original_images = batch['original'].to(device)
+                    optimized_images = batch['optimized'].to(device)
 
-                outputs = model(optimized_images)
-                outputs = torch.nn.functional.interpolate(outputs, size=(original_images.size(2), original_images.size(3)), mode='bilinear', align_corners=False)
+                    outputs = model(optimized_images)
+                    outputs = torch.nn.functional.interpolate(outputs, size=(original_images.size(2), original_images.size(3)), mode='bilinear', align_corners=False)
 
-                loss = custom_loss(original_images, outputs)
-                test_loss += loss.item() * original_images.size(0)
+                    loss = custom_loss(original_images, outputs)
+                    test_loss += loss.item() * original_images.size(0)
 
-        test_loss /= len(test_loader.dataset)
-        print(f'Epoch [{epoch + 1}/{num_epochs}], Test Loss: {test_loss}')
-        test_loss_logger.append(test_loss)
+            test_loss /= len(test_loader.dataset)
+            log_file.write(f'Epoch [{epoch + 1}/{num_epochs}], Test Loss: {test_loss}\n')  # 记录到日志文件
+            print(f'Epoch [{epoch + 1}/{num_epochs}], Test Loss: {test_loss}')
+            test_loss_logger.append(test_loss)
 
-    # 每50个epoch调用optimize_images进行预测
-    if (epoch + 1) % 50 == 0:
-        # 保存模型的状态
-        torch.save(model.state_dict(), f'larger_unet_lsp_epoch_{epoch + 1}.pth')
+        # 每50个epoch调用optimize_images进行预测
+        if (epoch + 1) % 50 == 0:
+            # 保存模型的状态
+            torch.save(model.state_dict(), f'larger_unet_lsp_epoch_{epoch + 1}.pth')
 
-        # 使用optimize_images方法进行预测
-        pre.optimize_images(input_folder='original_test_images', model_path=f'larger_unet_lsp_epoch_{epoch + 1}.pth', output_folder=f'optimized_results_epoch_{epoch + 1}')
+            # 使用optimize_images方法进行预测
+            pre.optimize_images(input_folder='original_test_images', model_path=f'larger_unet_lsp_epoch_{epoch + 1}.pth', output_folder=f'optimized_results_epoch_{epoch + 1}')
 
 # 保存模型
 torch.save(model.state_dict(), 'larger_unet_model_LSP.pth')
